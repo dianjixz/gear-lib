@@ -104,6 +104,12 @@ function(register_component)
         target_compile_options(${component_name} PRIVATE ${difinition})
     endforeach()
 
+    # Add link private
+    foreach(difinition ${ADD_LINKOPTIONS_PRIVATE})
+		target_link_options(${component_name} PRIVATE ${difinition})
+    endforeach()
+
+
     # Add lib search path
     if(ADD_LINK_SEARCH_PATH)
         foreach(path ${ADD_LINK_SEARCH_PATH})
@@ -118,7 +124,7 @@ function(register_component)
             if(EXISTS "${abs_dir}")
                 set(link_search_path ${g_link_search_path})
                 list(APPEND link_search_path "${abs_dir}")
-                # target_link_directories(${component_name} PUBLIC ${link_search_path}) # this will fail add -L -Wl,-rpath flag for some .so
+                target_link_directories(${component_name} PUBLIC ${link_search_path}) # this will fail add -L -Wl,-rpath flag for some .so
                 list(REMOVE_DUPLICATES link_search_path)
                 set(g_link_search_path ${link_search_path}  CACHE INTERNAL "g_link_search_path")
             endif()
@@ -185,6 +191,37 @@ function(is_path_component ret param_path)
     set(${ret} ${res} PARENT_SCOPE)
 endfunction()
 
+function(find_components componet_dirs kconfigs configs found_main find_dir)
+    set(_componet_dirs ${${componet_dirs}})
+    set(_kconfigs ${${configs}})
+    set(_configs ${${configs}})
+    set(_found_main ${${found_main}})
+    file(GLOB component_dirs ${find_dir})
+    foreach(component_dir ${component_dirs})
+        is_path_component(is_component ${component_dir})
+        if(is_component)
+            message(STATUS "Find component: ${component_dir}")
+            get_filename_component(base_dir ${component_dir} NAME)
+            if(${base_dir} STREQUAL "main")
+                set(_found_main 1)
+            endif()
+            list(APPEND _componet_dirs ${component_dir})
+            if(EXISTS ${component_dir}/Kconfig)
+                message(STATUS "Find component Kconfig of ${base_dir}")
+                list(APPEND _kconfigs ${component_dir}/Kconfig PARENT_SCOPE)
+            endif()
+            if(EXISTS ${component_dir}/config_defaults.mk)
+                message(STATUS "Find component defaults config of ${base_dir}")
+                list(APPEND _configs --defaults "${component_dir}/config_defaults.mk" PARENT_SCOPE)
+            endif()
+        endif()
+    endforeach()
+    set(${componet_dirs} ${_componet_dirs} PARENT_SCOPE)
+    set(${kconfigs} ${_kconfigs} PARENT_SCOPE)
+    set(${configs} ${_configs} PARENT_SCOPE)
+    set(${found_main} ${_found_main} PARENT_SCOPE)
+endfunction()
+
 function(get_python python version info_str)
     set(res 1)
     execute_process(COMMAND python3 --version RESULT_VARIABLE cmd_res OUTPUT_VARIABLE cmd_out)
@@ -204,63 +241,29 @@ endfunction(get_python python)
 
 
 macro(project name)
-    
     get_filename_component(current_dir ${CMAKE_CURRENT_LIST_FILE} DIRECTORY)
     set(PROJECT_SOURCE_DIR ${current_dir})
     set(PROJECT_BINARY_DIR "${current_dir}/build")
 
     # Find components in SDK's components folder, register components
-    file(GLOB component_dirs ${SDK_PATH}/components/*)
-    foreach(component_dir ${component_dirs})
-        is_path_component(is_component ${component_dir})
-        if(is_component)
-            message(STATUS "Find component: ${component_dir}")
-            get_filename_component(base_dir ${component_dir} NAME)
-            list(APPEND components_dirs ${component_dir})
-            if(EXISTS ${component_dir}/Kconfig)
-                message(STATUS "Find component Kconfig of ${base_dir}")
-                list(APPEND components_kconfig_files ${component_dir}/Kconfig)
-            endif()
-            if(EXISTS ${component_dir}/config_defaults.mk)
-                message(STATUS "Find component defaults config of ${base_dir}")
-                list(APPEND kconfig_defaults_files_args --defaults "${component_dir}/config_defaults.mk")
-            endif()
-        endif()
-    endforeach()
-
+    find_components(components_dirs components_kconfig_files kconfig_defaults_files_args found_main ${SDK_PATH}/components/*)
+    # Find components in projects' shared components folder, register components
+    find_components(components_dirs components_kconfig_files kconfig_defaults_files_args found_main ${PROJECT_SOURCE_DIR}/../components/*)
     # Find components in project folder
-    file(GLOB project_component_dirs ${PROJECT_SOURCE_DIR}/*)
-    foreach(component_dir ${project_component_dirs})
-        is_path_component(is_component ${component_dir})
-        if(is_component)
-            message(STATUS "find component: ${component_dir}")
-            get_filename_component(base_dir ${component_dir} NAME)
-            list(APPEND components_dirs ${component_dir})
-            if(${base_dir} STREQUAL "main")
-                set(main_component 1)
-            endif()
-            if(EXISTS ${component_dir}/Kconfig)
-                message(STATUS "Find component Kconfig of ${base_dir}")
-                list(APPEND components_kconfig_files ${component_dir}/Kconfig)
-            endif()
-            if(EXISTS ${component_dir}/config_defaults.mk)
-                message(STATUS "Find component defaults config of ${base_dir}")
-                list(APPEND kconfig_defaults_files_args --defaults "${component_dir}/config_defaults.mk")
-            endif()
-        endif()
-    endforeach()
-    if(NOT main_component)
+    find_components(components_dirs components_kconfig_files kconfig_defaults_files_args found_main ${PROJECT_SOURCE_DIR}/*)
+
+    if(NOT found_main)
         message(FATAL_ERROR "=================\nCan not find main component(folder) in project folder!!\n=================")
     endif()
 
     # Find default config file
     if(DEFAULT_CONFIG_FILE)
+        message(STATUS "Project defaults config file:${DEFAULT_CONFIG_FILE}")
+        list(APPEND kconfig_defaults_files_args --defaults "${DEFAULT_CONFIG_FILE}")
         if(EXISTS ${PROJECT_SOURCE_DIR}/.config.mk)
             message(STATUS "Find project defaults config(.config.mk)")
             list(APPEND kconfig_defaults_files_args --defaults "${PROJECT_SOURCE_DIR}/.config.mk")
         endif()
-        message(STATUS "Project defaults config file:${DEFAULT_CONFIG_FILE}")
-        list(APPEND kconfig_defaults_files_args --defaults "${DEFAULT_CONFIG_FILE}")
     else()
         if(EXISTS ${PROJECT_SOURCE_DIR}/config_defaults.mk)
             message(STATUS "Find project defaults config(config_defaults.mk)")
@@ -286,6 +289,7 @@ macro(project name)
                             --menuconfig False
                             --env "SDK_PATH=${SDK_PATH}"
                             --env "PROJECT_PATH=${PROJECT_SOURCE_DIR}"
+                            --env "BUILD_TYPE=${CMAKE_BUILD_TYPE}"
                             --output makefile ${PROJECT_BINARY_DIR}/config/global_config.mk
                             --output cmake  ${PROJECT_BINARY_DIR}/config/global_config.cmake
                             --output header ${PROJECT_BINARY_DIR}/config/global_config.h
@@ -296,6 +300,7 @@ macro(project name)
                             --menuconfig True
                             --env "SDK_PATH=${SDK_PATH}"
                             --env "PROJECT_PATH=${PROJECT_SOURCE_DIR}"
+                            --env "BUILD_TYPE=${CMAKE_BUILD_TYPE}"
                             --output makefile ${PROJECT_BINARY_DIR}/config/global_config.mk
                             --output cmake  ${PROJECT_BINARY_DIR}/config/global_config.cmake
                             --output header ${PROJECT_BINARY_DIR}/config/global_config.h
@@ -317,39 +322,69 @@ macro(project name)
     endif()
 
     # Config toolchain
-    if(CONFIG_TOOLCHAIN_PATH OR CONFIG_TOOLCHAIN_PREFIX)
-        if(CONFIG_TOOLCHAIN_PATH)
-            if(WIN32)
-                file(TO_CMAKE_PATH ${CONFIG_TOOLCHAIN_PATH} CONFIG_TOOLCHAIN_PATH)
-            endif()
-            if(NOT IS_DIRECTORY ${CONFIG_TOOLCHAIN_PATH})
-                message(FATAL_ERROR "TOOLCHAIN_PATH set error:${CONFIG_TOOLCHAIN_PATH}")
-            endif()
-            set(path_split /)
-        endif()
-        set(TOOLCHAIN_PATH ${CONFIG_TOOLCHAIN_PATH})
-        message(STATUS "TOOLCHAIN_PATH:${CONFIG_TOOLCHAIN_PATH}")
-        set(CMAKE_C_COMPILER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}gcc${EXT}")
-        set(CMAKE_CXX_COMPILER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}g++${EXT}")
-        set(CMAKE_ASM_COMPILER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}gcc${EXT}")
-        set(CMAKE_LINKER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}ld${EXT}")
+    if(CONFIG_TOOLCHAIN_PATH MATCHES ".*.cmake$" AND NOT CMAKE_TOOLCHAIN_FILE)
+        message("-- CONFIG_TOOLCHAIN_PATH is cmake file: ${CONFIG_TOOLCHAIN_PATH}")
+        set(CMAKE_TOOLCHAIN_FILE ${CONFIG_TOOLCHAIN_PATH})
+    endif()
+    if(CMAKE_TOOLCHAIN_FILE)
+        message("-- CMAKE_TOOLCHAIN_FILE set: ${CMAKE_TOOLCHAIN_FILE}")
     else()
-        set(CMAKE_C_COMPILER "gcc${EXT}")
-        set(CMAKE_CXX_COMPILER "g++${EXT}")
-        set(CMAKE_ASM_COMPILER "gcc${EXT}")
-        set(CMAKE_LINKER  "ld${EXT}")
+        if(CONFIG_TOOLCHAIN_PATH OR CONFIG_TOOLCHAIN_PREFIX)
+            if(CONFIG_TOOLCHAIN_PATH)
+                if(WIN32)
+                    file(TO_CMAKE_PATH ${CONFIG_TOOLCHAIN_PATH} CONFIG_TOOLCHAIN_PATH)
+                endif()
+                if(NOT IS_DIRECTORY ${CONFIG_TOOLCHAIN_PATH})
+                    message(FATAL_ERROR "TOOLCHAIN_PATH set error:${CONFIG_TOOLCHAIN_PATH}")
+                endif()
+                set(path_split /)
+                set(TOOLCHAIN_PATH ${CONFIG_TOOLCHAIN_PATH})
+                message(STATUS "TOOLCHAIN_PATH:${CONFIG_TOOLCHAIN_PATH}")
+                set(CMAKE_C_COMPILER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}gcc${EXT}")
+                set(CMAKE_CXX_COMPILER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}g++${EXT}")
+                set(CMAKE_ASM_COMPILER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}gcc${EXT}")
+                set(CMAKE_LINKER "${CONFIG_TOOLCHAIN_PATH}${path_split}${CONFIG_TOOLCHAIN_PREFIX}ld${EXT}")
+            else()
+                message(STATUS "No TOOLCHAIN_PATH, only set TOOLCHAIN_PREFIX: ${CONFIG_TOOLCHAIN_PREFIX}")
+                set(CMAKE_C_COMPILER "${CONFIG_TOOLCHAIN_PREFIX}gcc${EXT}")
+                set(CMAKE_CXX_COMPILER "${CONFIG_TOOLCHAIN_PREFIX}g++${EXT}")
+                set(CMAKE_ASM_COMPILER "${CONFIG_TOOLCHAIN_PREFIX}gcc${EXT}")
+                set(CMAKE_LINKER "${CONFIG_TOOLCHAIN_PREFIX}ld${EXT}")
+            endif()
+        else()
+            message(STATUS "use default toolchain: gcc")
+            set(CMAKE_C_COMPILER "gcc${EXT}")
+            set(CMAKE_CXX_COMPILER "g++${EXT}")
+            set(CMAKE_ASM_COMPILER "gcc${EXT}")
+            set(CMAKE_LINKER  "ld${EXT}")
+        endif()
     endif()
 
     set(CMAKE_C_COMPILER_WORKS 1)
     set(CMAKE_CXX_COMPILER_WORKS 1)
 
-    
+
     # set(CMAKE_SYSTEM_NAME Generic) # set this flag may leads to dymamic(/shared) lib compile fail
 
     # Declare project # This function will cler flags!
     _project(${name} ASM C CXX)
-    
-    include(${SDK_PATH}/tools/cmake/compile_flags.cmake)
+
+    if(CMAKE_EXECUTABLE_SUFFIX STREQUAL ".js") # generate js ang html file for WASM
+        set(CMAKE_EXECUTABLE_SUFFIX ".html")
+    endif()
+
+    if(EXISTS "${PROJECT_PATH}/compile/compile_flags.cmake")
+        include("${PROJECT_PATH}/compile/compile_flags.cmake")
+    else()
+        include("${SDK_PATH}/tools/cmake/compile_flags.cmake")
+    endif()
+
+    # add DEBUG or RELEASE flag globally
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        add_definitions(-DDEBUG=1)
+    else()
+        add_definitions(-DRELEASE=1)
+    endif()
 
     # Add dependence: update configfile, append time and git info for global config header file
     # we didn't generate build info for cmake and makefile for if we do, it will always rebuild cmake
@@ -405,7 +440,11 @@ macro(project name)
     target_link_libraries(${name} main)
 
     # Add binary
-    include("${SDK_PATH}/tools/cmake/gen_binary.cmake")
+    if(EXISTS "${PROJECT_PATH}/compile/gen_binary.cmake")
+        include("${PROJECT_PATH}/compile/gen_binary.cmake")
+    else()
+        include("${SDK_PATH}/tools/cmake/gen_binary.cmake")
+    endif()
 
 endmacro()
 

@@ -26,6 +26,9 @@
 #include <stdint.h>
 #include <wchar.h>
 
+struct reflect __start_reflect;
+struct reflect __stop_reflect;
+
 void *memdup(const void *src, size_t len)
 {
     void *dst = NULL;
